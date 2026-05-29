@@ -1,0 +1,5 @@
+transformers>=4.45,<4.48
+datasets
+pyserini
+uvicorn
+fastapi

@@ -15,7 +15,6 @@
 Preprocess the nq dataset to parquet format
 """
 
-import re
 import os
 import datasets
 
@@ -42,6 +41,7 @@ If you find no further external knowledge needed, you can directly provide the a
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--local_dir', default='./data/nq_search')
+    parser.add_argument('--raw_dir', default='./data/raw')
     parser.add_argument('--hdfs_dir', default=None)
     parser.add_argument('--template_type', type=str, default='base')
 
@@ -49,7 +49,16 @@ if __name__ == '__main__':
 
     data_source = 'nq'
 
-    dataset = datasets.load_dataset('RUC-NLPIR/FlashRAG_datasets', 'nq')
+    train_jsonl = os.path.join(args.raw_dir, 'train.jsonl')
+    test_jsonl = os.path.join(args.raw_dir, 'test.jsonl')
+
+    if os.path.exists(train_jsonl) and os.path.exists(test_jsonl):
+        dataset = datasets.load_dataset('json', data_files={
+            'train': train_jsonl,
+            'test': test_jsonl,
+        })
+    else:
+        dataset = datasets.load_dataset('RUC-NLPIR/FlashRAG_datasets', 'nq')
 
     train_dataset = dataset['train']
     test_dataset = dataset['test']
@@ -91,6 +100,7 @@ if __name__ == '__main__':
 
     local_dir = args.local_dir
     hdfs_dir = args.hdfs_dir
+    os.makedirs(local_dir, exist_ok=True)
 
     train_dataset.to_parquet(os.path.join(local_dir, 'train.parquet'))
     test_dataset.to_parquet(os.path.join(local_dir, 'test.parquet'))
