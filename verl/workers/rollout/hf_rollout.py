@@ -41,8 +41,23 @@ class HFRollout(BaseRollout):
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         batch_size = prompts.batch.batch_size[0]
-        num_chunks = max(batch_size // self.config.get('micro_batch_size', batch_size), 1)
-        batch_prompts = prompts.chunk(chunks=num_chunks)
+        micro_batch_size = self.config.get('micro_batch_size', batch_size)
+        if micro_batch_size is None or micro_batch_size <= 0:
+            micro_batch_size = batch_size
+
+        # HF rollout can receive dynamically padded batches (for example, after
+        # multi-GPU padding in search generation), so the last micro-batch may be
+        # smaller than the configured micro_batch_size.
+        batch_prompts = []
+        for start in range(0, batch_size, micro_batch_size):
+            end = min(start + micro_batch_size, batch_size)
+            non_tensor_batch = {k: v[start:end] for k, v in prompts.non_tensor_batch.items()}
+            batch_prompts.append(
+                DataProto(
+                    batch=prompts.batch[start:end],
+                    non_tensor_batch=non_tensor_batch,
+                    meta_info=prompts.meta_info,
+                ))
         output = [self._generate_minibatch(p) for p in batch_prompts]
         output = DataProto.concat(output)
         return output

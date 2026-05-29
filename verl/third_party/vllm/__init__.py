@@ -46,6 +46,13 @@ elif package_version == '0.6.3':
     from .vllm_v_0_6_3.llm import LLMEngine
     from .vllm_v_0_6_3 import parallel_state
 else:
-    raise ValueError(
-        f'vllm version {package_version} not supported. Currently supported versions are 0.3.1, 0.4.2, 0.5.4 and 0.6.3.'
+    if package_version is None:
+        raise ImportError(
+            'vLLM support was requested, but the `vllm` package is not installed. '
+            'Install the optional dependency with `pip install -e .[vllm]` '
+            'or switch rollout.name to `hf`.'
+        )
+    raise ImportError(
+        f'vllm version {package_version} not supported. '
+        'Currently supported versions are 0.3.1, 0.4.2, 0.5.4 and 0.6.3.'
     )
