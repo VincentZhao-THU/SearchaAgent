@@ -175,6 +175,9 @@ trainer:
   critic_warmup: 0
   default_hdfs_dir: ~/experiments/gsm8k/ppo/${trainer.experiment_name}
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
+  resume_mode: disable
+  resume_from_path: null
+  del_local_ckpt_after_load: false
 
 max_turns: 10
 do_search: true

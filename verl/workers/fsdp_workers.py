@@ -18,6 +18,7 @@ The main entry point to run the PPO algorithm
 import logging
 import os
 import warnings
+import json
 
 import torch
 import torch.distributed
@@ -529,14 +530,74 @@ class ActorRolloutRefWorker(Worker):
             os.makedirs(local_path, exist_ok=True)
             self.actor_module.save_pretrained(local_path, state_dict=state_dict)
             self.tokenizer.save_pretrained(local_path)
+            with open(os.path.join(local_path, 'meta.json'), 'w') as f:
+                json.dump({'world_size': self.world_size}, f)
             if hdfs_path is not None:
                 print(f'Uploading actor checkpoint to {hdfs_path}')
                 hdfs_io.makedirs(hdfs_path, exist_ok=True)
                 hdfs_io.copy(src=local_path, dst=hdfs_path)
 
+        if self._is_offload_optimizer:
+            load_fsdp_optimizer(optimizer=self.actor_optimizer, device_id=torch.cuda.current_device())
+
+        optimizer_state_path = os.path.join(local_path, f'optim_rank_{self.rank}.pt')
+        scheduler_state_path = os.path.join(local_path, f'scheduler_rank_{self.rank}.pt')
+        os.makedirs(local_path, exist_ok=True)
+        torch.save(self.actor_optimizer.state_dict(), optimizer_state_path)
+        if self.actor_lr_scheduler is not None:
+            torch.save(self.actor_lr_scheduler.state_dict(), scheduler_state_path)
+
         torch.distributed.barrier()
         if self._is_offload_param:
             offload_fsdp_param_and_grad(module=self.actor_module_fsdp, offload_grad=self._is_offload_grad)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.actor_optimizer)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def load_checkpoint(self, local_path):
+        assert self._is_actor
+        import torch
+        from transformers import AutoModelForCausalLM
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+
+        local_path = copy_local_path_from_hdfs(local_path)
+        if self._is_offload_param:
+            load_fsdp_param_and_grad(
+                module=self.actor_module_fsdp,
+                device_id=torch.cuda.current_device(),
+                load_grad=self._is_offload_grad,
+            )
+        if self._is_offload_optimizer:
+            load_fsdp_optimizer(optimizer=self.actor_optimizer, device_id=torch.cuda.current_device())
+
+        loaded_model = AutoModelForCausalLM.from_pretrained(
+            local_path,
+            torch_dtype=self.actor_module.dtype,
+            trust_remote_code=self.config.model.get('trust_remote_code', False),
+        )
+        loaded_state_dict = loaded_model.state_dict()
+        del loaded_model
+
+        cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
+        with FSDP.state_dict_type(self.actor.actor_module, StateDictType.FULL_STATE_DICT, cfg):
+            self.actor.actor_module.load_state_dict(loaded_state_dict)
+
+        optimizer_state_path = os.path.join(local_path, f'optim_rank_{self.rank}.pt')
+        if os.path.exists(optimizer_state_path):
+            optimizer_state = torch.load(optimizer_state_path, map_location='cpu', weights_only=False)
+            self.actor_optimizer.load_state_dict(optimizer_state)
+
+        scheduler_state_path = os.path.join(local_path, f'scheduler_rank_{self.rank}.pt')
+        if self.actor_lr_scheduler is not None and os.path.exists(scheduler_state_path):
+            scheduler_state = torch.load(scheduler_state_path, map_location='cpu', weights_only=False)
+            self.actor_lr_scheduler.load_state_dict(scheduler_state)
+
+        torch.distributed.barrier()
+        if self._is_offload_param:
+            offload_fsdp_param_and_grad(module=self.actor_module_fsdp, offload_grad=self._is_offload_grad)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.actor_optimizer)
+        torch.cuda.empty_cache()
 
 
 class CriticWorker(Worker):
@@ -787,14 +848,73 @@ class CriticWorker(Worker):
             os.makedirs(local_path, exist_ok=True)
             self.critic_module._fsdp_wrapped_module.save_pretrained(local_path, state_dict=state_dict)
             self.tokenizer.save_pretrained(local_path)
+            with open(os.path.join(local_path, 'meta.json'), 'w') as f:
+                json.dump({'world_size': self.world_size}, f)
             if hdfs_path is not None:
                 print(f'Uploading critic checkpoint to {hdfs_path}')
                 hdfs_io.makedirs(hdfs_path, exist_ok=True)
                 hdfs_io.copy(src=local_path, dst=hdfs_path)
 
+        if self._is_offload_optimizer:
+            load_fsdp_optimizer(optimizer=self.critic_optimizer, device_id=torch.cuda.current_device())
+
+        optimizer_state_path = os.path.join(local_path, f'optim_rank_{self.rank}.pt')
+        scheduler_state_path = os.path.join(local_path, f'scheduler_rank_{self.rank}.pt')
+        os.makedirs(local_path, exist_ok=True)
+        torch.save(self.critic_optimizer.state_dict(), optimizer_state_path)
+        if self.critic_lr_scheduler is not None:
+            torch.save(self.critic_lr_scheduler.state_dict(), scheduler_state_path)
+
         torch.distributed.barrier()
         if self._is_offload_param:
             offload_fsdp_param_and_grad(module=self.critic_module, offload_grad=self._is_offload_grad)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.critic_optimizer)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def load_checkpoint(self, local_path):
+        import torch
+        from transformers import AutoModelForTokenClassification
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+
+        local_path = copy_local_path_from_hdfs(local_path)
+        if self._is_offload_param:
+            load_fsdp_param_and_grad(
+                module=self.critic_module,
+                device_id=torch.cuda.current_device(),
+                load_grad=self._is_offload_grad,
+            )
+        if self._is_offload_optimizer:
+            load_fsdp_optimizer(optimizer=self.critic_optimizer, device_id=torch.cuda.current_device())
+
+        loaded_model = AutoModelForTokenClassification.from_pretrained(
+            local_path,
+            torch_dtype=self.critic_module._fsdp_wrapped_module.dtype,
+            trust_remote_code=self.config.model.get('trust_remote_code', False),
+        )
+        loaded_state_dict = loaded_model.state_dict()
+        del loaded_model
+
+        cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
+        with FSDP.state_dict_type(self.critic_module, StateDictType.FULL_STATE_DICT, cfg):
+            self.critic_module.load_state_dict(loaded_state_dict)
+
+        optimizer_state_path = os.path.join(local_path, f'optim_rank_{self.rank}.pt')
+        if os.path.exists(optimizer_state_path):
+            optimizer_state = torch.load(optimizer_state_path, map_location='cpu', weights_only=False)
+            self.critic_optimizer.load_state_dict(optimizer_state)
+
+        scheduler_state_path = os.path.join(local_path, f'scheduler_rank_{self.rank}.pt')
+        if self.critic_lr_scheduler is not None and os.path.exists(scheduler_state_path):
+            scheduler_state = torch.load(scheduler_state_path, map_location='cpu', weights_only=False)
+            self.critic_lr_scheduler.load_state_dict(scheduler_state)
+
+        torch.distributed.barrier()
+        if self._is_offload_param:
+            offload_fsdp_param_and_grad(module=self.critic_module, offload_grad=self._is_offload_grad)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.critic_optimizer)
+        torch.cuda.empty_cache()
 
 
 # TODO(sgm): we may need to extract it to dp_reward_model.py

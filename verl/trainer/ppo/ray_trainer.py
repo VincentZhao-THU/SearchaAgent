@@ -37,6 +37,7 @@ from verl.single_controller.base import Worker
 from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo import core_algos
+from verl.utils.checkpoint_manager import find_latest_ckpt_path, resolve_checkpoint_path
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 
 import re
@@ -621,18 +622,88 @@ class RayPPOTrainer(object):
         self.actor_rollout_wg.init_model()
 
     def _save_checkpoint(self):
-        actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
-                                        f'global_step_{self.global_steps}')
+        local_global_step_folder = os.path.join(
+            self.config.trainer.default_local_dir,
+            f'global_step_{self.global_steps}',
+        )
+        actor_local_path = os.path.join(local_global_step_folder, 'actor')
         actor_remote_path = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
-            self.config.trainer.default_hdfs_dir, 'actor')
+            self.config.trainer.default_hdfs_dir,
+            f'global_step_{self.global_steps}',
+            'actor',
+        )
         self.actor_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path)
 
         if self.use_critic:
-            critic_local_path = os.path.join(self.config.trainer.default_local_dir, 'critic',
-                                             f'global_step_{self.global_steps}')
+            critic_local_path = os.path.join(local_global_step_folder, 'critic')
             critic_remote_path = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
-                self.config.trainer.default_hdfs_dir, 'critic')
+                self.config.trainer.default_hdfs_dir,
+                f'global_step_{self.global_steps}',
+                'critic',
+            )
             self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
+
+    def _load_checkpoint(self):
+        resume_mode = self.config.trainer.get('resume_mode', 'disable')
+        if resume_mode == 'disable':
+            return 0
+
+        actor_path = None
+        critic_path = None
+        if resume_mode == 'auto':
+            checkpoint_root = self.config.trainer.default_local_dir
+            if not os.path.isabs(checkpoint_root):
+                checkpoint_root = os.path.join(os.getcwd(), checkpoint_root)
+            global_step_folder = resolve_checkpoint_path(
+                resume_mode=resume_mode,
+                default_local_dir=checkpoint_root,
+            )
+            if global_step_folder is not None:
+                if os.path.basename(os.path.dirname(os.path.normpath(global_step_folder))) == 'actor':
+                    actor_path = global_step_folder
+                    critic_path = os.path.join(
+                        checkpoint_root,
+                        'critic',
+                        os.path.basename(os.path.normpath(global_step_folder)),
+                    )
+                else:
+                    actor_path = os.path.join(global_step_folder, 'actor')
+                    critic_path = os.path.join(global_step_folder, 'critic')
+            else:
+                print('No checkpoint found under default_local_dir. Training from scratch.')
+                return 0
+        elif resume_mode == 'resume_path':
+            global_step_folder = self.config.trainer.get('resume_from_path', None)
+            assert isinstance(global_step_folder, str) and global_step_folder, \
+                'trainer.resume_from_path must be a non-empty string when resume_mode=resume_path'
+            if not os.path.isabs(global_step_folder):
+                global_step_folder = os.path.join(os.getcwd(), global_step_folder)
+            parent_dir = os.path.basename(os.path.dirname(os.path.normpath(global_step_folder)))
+            if parent_dir in {'actor', 'critic'}:
+                step_dir_name = os.path.basename(os.path.normpath(global_step_folder))
+                checkpoint_root = os.path.dirname(os.path.dirname(os.path.normpath(global_step_folder)))
+                actor_path = global_step_folder if parent_dir == 'actor' else os.path.join(checkpoint_root, 'actor', step_dir_name)
+                critic_path = global_step_folder if parent_dir == 'critic' else os.path.join(checkpoint_root, 'critic', step_dir_name)
+            else:
+                actor_path = os.path.join(global_step_folder, 'actor')
+                critic_path = os.path.join(global_step_folder, 'critic')
+        else:
+            raise ValueError(f'Unsupported trainer.resume_mode: {resume_mode}')
+
+        step_match = re.search(r'global_step_(\d+)', os.path.basename(os.path.normpath(global_step_folder)))
+        if step_match is None:
+            raise ValueError(f'Cannot parse global step from checkpoint path: {global_step_folder}')
+
+        loaded_step = int(step_match.group(1))
+        print(f'Loading checkpoint from {global_step_folder}')
+        print(f'Loaded completed global step {loaded_step}')
+
+        self.actor_rollout_wg.load_checkpoint(actor_path)
+
+        if self.use_critic and os.path.isdir(critic_path):
+            self.critic_wg.load_checkpoint(critic_path)
+
+        return loaded_step
 
     def _balance_batch(self, batch: DataProto, metrics, logging_prefix='global_seqlen'):
         """Reorder the data on single controller such that each dp rank gets similar total tokens"""
@@ -660,6 +731,8 @@ class RayPPOTrainer(object):
 
         logger = self.logger
         self.global_steps = 0
+        loaded_step = self._load_checkpoint()
+        self.global_steps = loaded_step
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
@@ -669,8 +742,8 @@ class RayPPOTrainer(object):
             if self.config.trainer.get('val_only', False):
                 return
 
-        # we start from step 1
-        self.global_steps += 1
+        # fresh training starts from step 1; resumed training continues from next step
+        self.global_steps = loaded_step + 1 if loaded_step > 0 else 1
 
         # Agent config preparation
         gen_config = GenerationConfig(
@@ -692,8 +765,14 @@ class RayPPOTrainer(object):
         )
 
         # start training loop
-        for epoch in range(self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
+        completed_steps = self.global_steps - 1
+        start_epoch = completed_steps // len(self.train_dataloader)
+        step_offset_in_epoch = completed_steps % len(self.train_dataloader)
+
+        for epoch in range(start_epoch, self.config.trainer.total_epochs):
+            for batch_idx, batch_dict in enumerate(self.train_dataloader):
+                if epoch == start_epoch and batch_idx < step_offset_in_epoch:
+                    continue
                 print(f'epoch {epoch}, step {self.global_steps}')
                 metrics = {}
                 timing_raw = {}
