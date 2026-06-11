@@ -125,3 +125,8 @@ log/
 
 # debug
 scripts/debug/*
+
+# checkpoints
+verl_checkpoints/
+
+Search-R1.pdf

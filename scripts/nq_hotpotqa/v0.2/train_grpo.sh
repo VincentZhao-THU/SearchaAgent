@@ -1,29 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 data_name=nq_hotpotqa_train
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+cd "$REPO_ROOT" || exit 1
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export DATA_DIR=data/${data_name} # first download the data from https://huggingface.co/datasets/PeterJinGo/nq_hotpotqa_train
 
 WAND_PROJECT="Search-R1"
+LOG_DIR="${LOG_DIR:-log}"
 
-# export BASE_MODEL='Qwen/Qwen2.5-3B'
-# export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-3b-em
-# export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
+export BASE_MODEL="${BASE_MODEL:-/nfs/volume-904-5/zhaowx/models/Qwen2.5-3B}"
+export EXPERIMENT_NAME="${EXPERIMENT_NAME:-${data_name}-search-r1-grpo-qwen2.5-3b-em}"
+# export BASE_MODEL='/nfs/volume-904-5/zhaowx/models/Qwen2.5-3B-Instruct'
 # export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-3b-it-em
-export BASE_MODEL='Qwen/Qwen2.5-7B'
-export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-7b-em
-# export BASE_MODEL='Qwen/Qwen2.5-7B-Instruct'
+# export BASE_MODEL='/nfs/volume-904-5/zhaowx/models/Qwen2.5-7B'
+# export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-7b-em
+# export BASE_MODEL='/nfs/volume-904-5/zhaowx/models/Qwen2.5-7B-Instruct'
 # export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-7b-it-em
-# export BASE_MODEL='Qwen/Qwen2.5-14B'
+# export BASE_MODEL='/nfs/volume-904-5/zhaowx/models/Qwen2.5-14B'
 # export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-14b-em
-# export BASE_MODEL='Qwen/Qwen2.5-14B-Instruct'
+# export BASE_MODEL='/nfs/volume-904-5/zhaowx/models/Qwen2.5-14B-Instruct'
 # export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-14b-it-em
 
-# set -x
-export VLLM_ATTENTION_BACKEND=XFORMERS # vllm + qwen2-7b with flash_attn has some issues
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+mkdir -p "$LOG_DIR"
+
+RESUME_MODE="${RESUME_MODE:-auto}"
+RESUME_FROM_PATH="${RESUME_FROM_PATH:-}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # max_prompt_length = (config['training']['max_start_length'] + config['training']['max_response_length'] * (config['training']['max_turns'] - 1) + config['training']['max_obs_length'] * config['training']['max_turns'])
 
-PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
+PYTHONUNBUFFERED=1 "$PYTHON_BIN" -m verl.trainer.main_ppo \
     data.train_files=$DATA_DIR/train.parquet \
     data.val_files=$DATA_DIR/test.parquet \
     data.train_data_num=null \
@@ -37,6 +51,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     data.shuffle_train_dataloader=True \
     algorithm.adv_estimator=grpo \
     actor_rollout_ref.model.path=$BASE_MODEL \
+    +actor_rollout_ref.model.attn_implementation=flash_attention_2 \
     actor_rollout_ref.model.enable_gradient_checkpointing=true \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
@@ -49,8 +64,8 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=128 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-    actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.name=hf \
+    +actor_rollout_ref.rollout.micro_batch_size=64 \
     actor_rollout_ref.ref.log_prob_micro_batch_size=128 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
@@ -58,6 +73,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     algorithm.no_think_rl=false \
     actor_rollout_ref.rollout.n_agent=5 \
     actor_rollout_ref.rollout.temperature=1 \
+    actor_rollout_ref.rollout.top_p=1.0 \
     actor_rollout_ref.actor.state_masking=true \
     trainer.logger=['wandb'] \
     +trainer.val_only=false \
@@ -65,7 +81,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     trainer.default_hdfs_dir=null \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
-    trainer.save_freq=100 \
+    trainer.save_freq=10 \
     trainer.test_freq=100 \
     trainer.project_name=$WAND_PROJECT \
     trainer.experiment_name=$EXPERIMENT_NAME \
@@ -73,7 +89,9 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     trainer.total_training_steps=1005 \
     trainer.default_hdfs_dir=null \
     trainer.default_local_dir=verl_checkpoints/$EXPERIMENT_NAME \
+    trainer.resume_mode=$RESUME_MODE \
+    trainer.resume_from_path="$RESUME_FROM_PATH" \
     max_turns=4 \
     retriever.url="http://127.0.0.1:8000/retrieve" \
     retriever.topk=3 \
-    2>&1 | tee $EXPERIMENT_NAME.log
+    2>&1 | tee "$LOG_DIR/$EXPERIMENT_NAME.log"
