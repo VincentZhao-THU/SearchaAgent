@@ -66,17 +66,9 @@ class Tracking(object):
             wandb_run_id = _load_wandb_run_id(wandb_meta_path, project_name, experiment_name)
             checkpoint_step = _resolve_wandb_checkpoint_step(config)
             if wandb_run_id is not None and checkpoint_step is not None:
-                wandb_init_kwargs['resume_from'] = f'{wandb_run_id}?_step={checkpoint_step}'
-            elif wandb_run_id is not None and trainer_config.get('resume_mode', 'disable') == 'disable':
-                # Intentionally starting a fresh run with the same experiment name.
-                pass
+                wandb_init_kwargs['fork_from'] = f'{wandb_run_id}?_step={checkpoint_step}'
 
-            run = _init_wandb_run_with_fallback(
-                wandb=wandb,
-                wandb_init_kwargs=wandb_init_kwargs,
-                wandb_run_id=wandb_run_id,
-                checkpoint_step=checkpoint_step,
-            )
+            run = wandb.init(**wandb_init_kwargs)
             if wandb_meta_path is not None and run is not None and run.id is not None:
                 _save_wandb_run_meta(wandb_meta_path, project_name, experiment_name, run.id)
             self.logger['wandb'] = wandb
@@ -188,38 +180,3 @@ def _resolve_wandb_checkpoint_step(config) -> Union[int, None]:
         )
     except (AssertionError, ValueError):
         return None
-
-
-def _init_wandb_run_with_fallback(wandb, wandb_init_kwargs: Dict[str, Any], wandb_run_id: Union[str, None],
-                                  checkpoint_step: Union[int, None]):
-    try:
-        return wandb.init(**wandb_init_kwargs)
-    except Exception as exc:
-        if not _should_fallback_from_rewind(exc, wandb_init_kwargs, wandb_run_id):
-            raise
-
-        fallback_kwargs = dict(wandb_init_kwargs)
-        fallback_kwargs.pop('resume_from', None)
-        fallback_kwargs['id'] = wandb_run_id
-        fallback_kwargs['resume'] = 'allow'
-        _reset_wandb_state_for_retry(wandb)
-        print(
-            f'wandb rewind is unavailable for run {wandb_run_id} at checkpoint step {checkpoint_step}; '
-            'falling back to resume="allow". W&B history after the checkpoint step will be kept as-is.'
-        )
-        return wandb.init(**fallback_kwargs)
-
-
-def _should_fallback_from_rewind(exc: Exception, wandb_init_kwargs: Dict[str, Any],
-                                 wandb_run_id: Union[str, None]) -> bool:
-    if 'resume_from' not in wandb_init_kwargs or wandb_run_id is None:
-        return False
-
-    error_message = str(exc)
-    return 'Rewind is in private preview' in error_message
-
-
-def _reset_wandb_state_for_retry(wandb) -> None:
-    teardown = getattr(wandb, 'teardown', None)
-    if callable(teardown):
-        teardown(exit_code=1)

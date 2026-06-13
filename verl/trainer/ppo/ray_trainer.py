@@ -722,6 +722,9 @@ class RayPPOTrainer(object):
                                                     prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
+    def _should_run_validation_before_train(self, loaded_step: int) -> bool:
+        return loaded_step == 0 and self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True)
+
     def fit(self):
         """
         The training loop of PPO.
@@ -733,9 +736,8 @@ class RayPPOTrainer(object):
         self.global_steps = 0
         loaded_step = self._load_checkpoint()
         self.global_steps = loaded_step
-        # perform validation before training
-        # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
+        # perform validation before fresh-start training only.
+        if self._should_run_validation_before_train(loaded_step):
             val_metrics = self._validate()
             pprint(f'Initial validation metrics: {val_metrics}')
             logger.log(data=val_metrics, step=self.global_steps)

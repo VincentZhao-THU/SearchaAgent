@@ -130,3 +130,5 @@ scripts/debug/*
 verl_checkpoints/
 
 Search-R1.pdf
+
+tests/
