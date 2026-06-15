@@ -132,3 +132,7 @@ verl_checkpoints/
 Search-R1.pdf
 
 tests/
+
+scripts/infer/manual_decompose_low_accuracy_sets.py
+
+CLAUDE.md
