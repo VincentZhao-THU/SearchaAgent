@@ -99,6 +99,17 @@ def entropy_from_logits(logits: torch.Tensor):
     return entropy
 
 
+def topk_entropy_from_logits(logits: torch.Tensor, top_k: int = 10):
+    """Calculate entropy from the truncated top-k logits distribution."""
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+
+    logits = logits.float()
+    k = min(top_k, logits.size(-1))
+    topk_logits = torch.topk(logits, k=k, dim=-1).values
+    return entropy_from_logits(topk_logits)
+
+
 def masked_sum(values, mask, axis=None):
     """Compute mean of tensor with a masked values."""
     return (values * mask).sum(axis=axis)

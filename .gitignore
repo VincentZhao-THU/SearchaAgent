@@ -136,3 +136,10 @@ tests/
 scripts/infer/manual_decompose_low_accuracy_sets.py
 
 CLAUDE.md
+
+reference/
+
+docs/implementation/
+docs/knowledge/
+
+commands.md
