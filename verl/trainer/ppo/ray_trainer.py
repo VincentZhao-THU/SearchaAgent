@@ -42,6 +42,10 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 
 import re
 from search_r1.llm_agent.generation import LLMGenerationManager, GenerationConfig
+from search_r1.llm_agent.generation_entropy_triggered import (
+    EntropySearchControlConfig,
+    EntropyTriggeredGenerationManager,
+)
 
 WorkerType = Type[Worker]
 
@@ -434,6 +438,30 @@ class RayPPOTrainer(object):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
             self.config.critic.optim.total_training_steps = total_training_steps
 
+    def _build_generation_manager(self, gen_config, is_validation: bool = False):
+        if self.config.search_control.mode == 'entropy_triggered':
+            entropy_control = EntropySearchControlConfig(
+                entropy_top_k=self.config.search_control.entropy_top_k,
+                ema_alpha=self.config.search_control.ema_alpha,
+                trigger_threshold=self.config.search_control.trigger_threshold,
+                trigger_tail_k=self.config.search_control.trigger_tail_k,
+                query_max_new_tokens=self.config.search_control.query_max_new_tokens,
+            )
+            gen_config.entropy_control = entropy_control
+            return EntropyTriggeredGenerationManager(
+                tokenizer=self.tokenizer,
+                actor_rollout_wg=self.actor_rollout_wg,
+                config=gen_config,
+                is_validation=is_validation,
+            )
+
+        return LLMGenerationManager(
+            tokenizer=self.tokenizer,
+            actor_rollout_wg=self.actor_rollout_wg,
+            config=gen_config,
+            is_validation=is_validation,
+        )
+
     def _validate(self):
         """
         The training loop of PPO with global metric computation.
@@ -453,15 +481,16 @@ class RayPPOTrainer(object):
             no_think_rl=self.config.algorithm.no_think_rl,
             search_url = self.config.retriever.url,
             topk = self.config.retriever.topk,
+            search_control_mode=self.config.search_control.mode,
+            entropy_top_k=self.config.search_control.entropy_top_k,
+            entropy_ema_alpha=self.config.search_control.ema_alpha,
+            entropy_trigger_threshold=self.config.search_control.trigger_threshold,
+            entropy_trigger_tail_k=self.config.search_control.trigger_tail_k,
+            query_max_new_tokens=self.config.search_control.query_max_new_tokens,
         )
 
         # Agent config preparation
-        generation_manager = LLMGenerationManager(
-            tokenizer=self.tokenizer,
-            actor_rollout_wg=self.actor_rollout_wg,
-            config=gen_config,
-            is_validation = True,
-        )
+        generation_manager = self._build_generation_manager(gen_config, is_validation=True)
 
         if not self.config.do_search:
             for test_data in self.val_dataloader:
@@ -758,13 +787,15 @@ class RayPPOTrainer(object):
             no_think_rl=self.config.algorithm.no_think_rl,
             search_url = self.config.retriever.url,
             topk = self.config.retriever.topk,
+            search_control_mode=self.config.search_control.mode,
+            entropy_top_k=self.config.search_control.entropy_top_k,
+            entropy_ema_alpha=self.config.search_control.ema_alpha,
+            entropy_trigger_threshold=self.config.search_control.trigger_threshold,
+            entropy_trigger_tail_k=self.config.search_control.trigger_tail_k,
+            query_max_new_tokens=self.config.search_control.query_max_new_tokens,
         )
 
-        generation_manager = LLMGenerationManager(
-            tokenizer=self.tokenizer,
-            actor_rollout_wg=self.actor_rollout_wg,
-            config=gen_config,
-        )
+        generation_manager = self._build_generation_manager(gen_config)
 
         # start training loop
         completed_steps = self.global_steps - 1

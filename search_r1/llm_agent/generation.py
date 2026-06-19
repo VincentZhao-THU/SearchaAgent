@@ -21,6 +21,12 @@ class GenerationConfig:
     no_think_rl: bool=False
     search_url: str = None
     topk: int = 3
+    search_control_mode: str = "explicit_tag"
+    entropy_top_k: int = 10
+    entropy_ema_alpha: float = 0.3
+    entropy_trigger_threshold: float = 0.2
+    entropy_trigger_tail_k: int = 3
+    query_max_new_tokens: int = 64
 
 class LLMGenerationManager:
     def __init__(

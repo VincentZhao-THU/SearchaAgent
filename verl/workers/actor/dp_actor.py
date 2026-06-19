@@ -200,6 +200,38 @@ class DataParallelPPOActor(BasePPOActor):
 
         return log_probs
 
+    def compute_response_entropy(self, data: DataProto) -> torch.Tensor:
+        """Compute token-level entropy for the response span."""
+        self.actor_module.eval()
+
+        micro_batch_size = data.meta_info['micro_batch_size']
+        temperature = data.meta_info['temperature']
+        use_dynamic_bsz = data.meta_info['use_dynamic_bsz']
+
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids']
+        batch = data.select(batch_keys=select_keys).batch
+
+        if use_dynamic_bsz:
+            max_token_len = data.meta_info['max_token_len'] * self.ulysses_sequence_parallel_size
+            micro_batches, indices = rearrange_micro_batches(batch=batch, max_token_len=max_token_len)
+        else:
+            micro_batches = batch.split(micro_batch_size)
+
+        entropy_lst = []
+        for micro_batch in micro_batches:
+            with torch.no_grad():
+                entropy, _ = self._forward_micro_batch(micro_batch, temperature=temperature)
+            entropy_lst.append(entropy)
+        entropy = torch.concat(entropy_lst, dim=0)
+
+        if use_dynamic_bsz:
+            indices = list(itertools.chain.from_iterable(indices))
+            assert len(indices) == entropy.size(0), f"{len(indices)} vs. {entropy.size()}"
+            revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
+            entropy = entropy[revert_indices]
+
+        return entropy
+
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
         self.actor_module.train()

@@ -17,13 +17,15 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 
 from verl import DataProto
 import torch
-from verl.utils.reward_score import qa_em, qa_em_format
+from verl.utils.reward_score import qa_em, qa_em_entropy_format, qa_em_format
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 import re
 import numpy as np
 
-def _select_rm_score_fn(data_source):
+def _select_rm_score_fn(data_source, reward_style='rule'):
     if data_source in ['nq', 'triviaqa', 'popqa', 'web_questions', 'hotpotqa', '2wikimultihopqa', 'musique', 'bamboogle', 'strategyqa']:
+        if reward_style == 'rule_entropy_triggered':
+            return qa_em_entropy_format.compute_score_em
         return qa_em_format.compute_score_em
     else:
         raise NotImplementedError
@@ -76,7 +78,8 @@ class RewardManager():
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']
-            compute_score_fn = _select_rm_score_fn(data_source)
+            reward_style = data_item.non_tensor_batch['reward_model'].get('style', 'rule')
+            compute_score_fn = _select_rm_score_fn(data_source, reward_style=reward_style)
 
             score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, 
                                      structure_format_score=self.structure_format_score, 

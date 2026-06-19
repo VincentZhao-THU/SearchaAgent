@@ -34,6 +34,13 @@ You must conduct reasoning inside <think> and </think> first every time you get 
 After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. \
 You can search as many times as your want. \
 If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. Question: {question}\n"""
+    elif template_type == 'entropy_triggered':
+        prefix = f"""Answer the given question. \
+You must conduct reasoning inside <think> and </think> first every time you get new information. \
+Use <answer> and </answer> only when you are ready to provide the final answer. \
+Search is controlled externally, so do not output <search> tags in your normal response. \
+If later you are explicitly asked to provide a search query, output only the raw query text and nothing else. \
+Question: {question}\n"""
     else:
         raise NotImplementedError
     return prefix
@@ -70,6 +77,7 @@ if __name__ == '__main__':
                     "target": example['golden_answers'],
                 }
 
+                reward_style = 'rule_entropy_triggered' if args.template_type == 'entropy_triggered' else 'rule'
                 data = {
                     "data_source": data_source,
                     "prompt": [{
@@ -78,7 +86,7 @@ if __name__ == '__main__':
                     }],
                     "ability": "fact-reasoning",
                     "reward_model": {
-                        "style": "rule",
+                        "style": reward_style,
                         "ground_truth": solution
                     },
                     "extra_info": {

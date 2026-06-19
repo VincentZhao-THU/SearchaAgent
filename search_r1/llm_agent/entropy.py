@@ -1,3 +1,4 @@
+import string
 from typing import Any, Dict, Iterable, List, Sequence
 
 import torch
@@ -86,3 +87,66 @@ def build_entropy_windows(records: Sequence[Dict[str, Any]], window_size: int = 
             "min_entropy": min(entropies),
         })
     return windows
+
+
+_THINK_TAG_PIECES = {"<", "</", "think", ">\n", ">", "\n", "<think>", "</think>"}
+
+
+def is_meaningful_think_token(token: str) -> bool:
+    stripped = token.strip()
+    if not stripped:
+        return False
+    if token in _THINK_TAG_PIECES or stripped in _THINK_TAG_PIECES:
+        return False
+    if all(ch in string.punctuation for ch in stripped):
+        return False
+    return True
+
+
+def compute_ema(values: Sequence[float], alpha: float = 0.3) -> List[float]:
+    if not 0 < alpha <= 1:
+        raise ValueError("alpha must be in (0, 1]")
+
+    ema_values: List[float] = []
+    cur = None
+    for value in values:
+        value = float(value)
+        cur = value if cur is None else alpha * value + (1 - alpha) * cur
+        ema_values.append(cur)
+    return ema_values
+
+
+def build_think_token_entropy_trace(
+    records: Sequence[Dict[str, Any]],
+    ema_alpha: float = 0.3,
+) -> Dict[str, Any]:
+    filtered_records = [
+        dict(record) for record in records
+        if is_meaningful_think_token(str(record.get("generated_token", "")))
+    ]
+    token_entropies = [float(record["entropy"]) for record in filtered_records]
+    ema_values = compute_ema(token_entropies, alpha=ema_alpha) if token_entropies else []
+    return {
+        "filtered_records": filtered_records,
+        "token_entropies": token_entropies,
+        "ema_values": ema_values,
+        "ema_alpha": float(ema_alpha),
+    }
+
+
+def ema_tail_trigger(
+    ema_values: Sequence[float],
+    threshold: float = 0.2,
+    tail_k: int = 3,
+) -> Dict[str, Any]:
+    if tail_k <= 0:
+        raise ValueError("tail_k must be positive")
+
+    tail = [float(value) for value in ema_values[-tail_k:]]
+    triggered = len(tail) == tail_k and all(value > threshold for value in tail)
+    return {
+        "triggered": triggered,
+        "tail_ema": tail,
+        "threshold": float(threshold),
+        "tail_k": int(tail_k),
+    }

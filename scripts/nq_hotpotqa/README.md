@@ -6,6 +6,17 @@
 huggingface-cli download --repo-type dataset PeterJinGo/nq_hotpotqa_train --local-dir $WORK_DIR/data/nq_hotpotqa_train
 ```
 
+### Prepare v0.4 entropy-triggered parquet files
+
+The downloaded `train.parquet` and `test.parquet` use the original explicit-search template.  
+For v0.4, generate a separate copy with the entropy-triggered prompt template and reward style:
+
+```bash
+python scripts/data_process/convert_parquet_to_entropy_triggered.py \
+  --input_dir $WORK_DIR/data/nq_hotpotqa_train \
+  --output_dir $WORK_DIR/data/nq_hotpotqa_train_entropy_triggered
+```
+
 ### Launch the local search engine
 
 (1) Download the indexing and corpus.

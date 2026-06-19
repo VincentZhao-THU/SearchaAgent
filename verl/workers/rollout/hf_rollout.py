@@ -25,6 +25,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from verl import DataProto
 from verl.utils.torch_functional import get_eos_mask
+from verl.utils.torch_functional import topk_entropy_from_logits
 from .base import BaseRollout
 
 from transformers import GenerationConfig
@@ -83,6 +84,8 @@ class HFRollout(BaseRollout):
         response_length = prompts.meta_info.get('response_length', self.config.response_length)
         top_p = prompts.meta_info.get('top_p', self.config.get('top_p', 1.0))
         top_k = prompts.meta_info.get('top_k', self.config.get('top_k', 0))
+        entropy_top_k = prompts.meta_info.get('entropy_top_k', 10)
+        return_entropy_trace = prompts.meta_info.get('return_entropy_trace', False)
 
         if top_k is None:
             top_k = 0
@@ -107,7 +110,7 @@ class HFRollout(BaseRollout):
                     pad_token_id=pad_token_id,
                     generation_config=generation_config,
                     # renormalize_logits=True,
-                    output_scores=False,  # this is potentially very large
+                    output_scores=return_entropy_trace,
                     return_dict_in_generate=True,
                     use_cache=True)
         # TODO: filter out the seq with no answers like ds-chat
@@ -147,6 +150,21 @@ class HFRollout(BaseRollout):
                 'position_ids': position_ids
             },
             batch_size=batch_size)
+
+        if return_entropy_trace:
+            token_entropies = torch.zeros(
+                (batch_size, self.config.response_length),
+                device=seq.device,
+                dtype=torch.float32,
+            )
+            if output.scores:
+                step_entropies = [
+                    topk_entropy_from_logits(step_scores, top_k=entropy_top_k).to(torch.float32)
+                    for step_scores in output.scores
+                ]
+                stacked = torch.stack(step_entropies, dim=1)
+                token_entropies[:, :stacked.size(1)] = stacked
+            batch["token_entropies"] = token_entropies
 
         # empty cache before compute old_log_prob
         torch.cuda.empty_cache()

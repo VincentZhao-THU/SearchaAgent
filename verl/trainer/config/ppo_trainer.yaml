@@ -149,6 +149,14 @@ retriever:
   url: "http://127.0.0.1:8000/retrieve"
   topk: 3
 
+search_control:
+  mode: explicit_tag
+  entropy_top_k: 10
+  ema_alpha: 0.3
+  trigger_threshold: 0.2
+  trigger_tail_k: 3
+  query_max_new_tokens: 64
+
 algorithm:
   gamma: 1.0
   lam: 1.0
